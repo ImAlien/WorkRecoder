@@ -1,0 +1,31 @@
+{
+  "name": "workrecoder",
+  "version": "1.0.0",
+  "description": "工作记录本 - 记录账号密码、文档链接、使用方法等，支持搜索",
+  "main": "./out/main/index.js",
+  "author": "",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "preview": "electron-vite preview",
+    "icon": "node build/gen-icon.js",
+    "build:win": "electron-vite build && electron-builder --win"
+  },
+  "dependencies": {
+    "@tiptap/extension-image": "^3.29.2",
+    "@tiptap/extension-placeholder": "^3.29.2",
+    "@tiptap/extension-task-item": "^3.29.2",
+    "@tiptap/extension-task-list": "^3.29.2",
+    "@tiptap/pm": "^3.29.2",
+    "@tiptap/starter-kit": "^3.29.2",
+    "@tiptap/vue-3": "^3.29.2",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "electron": "^33.2.1",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2.3.0",
+    "vite": "^5.4.11"
+  }
+}

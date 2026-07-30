@@ -1,0 +1,31 @@
+appId: com.workrecoder.app
+productName: 工作记录本
+copyright: WorkRecoder
+
+directories:
+  output: dist
+  buildResources: build
+
+# 只打包构建产物 + 运行期需要的依赖，源码/配置不进包
+files:
+  - out/**
+  - package.json
+  - '!**/*.map'
+  - '!**/{.vscode,.git,build}/**'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!electron-builder.yml'
+  - '!{.npmrc,.gitignore,README.md}'
+
+win:
+  icon: build/icon.ico
+  target:
+    - portable
+
+# 免安装单文件 exe
+portable:
+  artifactName: WorkRecoder-${version}-portable.exe
+
+# 内置中文/英文语言资源即可，减小体积
+electronLanguages:
+  - zh-CN
+  - en-US
