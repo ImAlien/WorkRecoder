@@ -11,6 +11,13 @@ const toastMsg = ref('')
 const editingNote = ref(null)
 const editorRef = ref(null)
 
+// ---- 同步 ----
+const showSync = ref(false)
+const syncCfg = ref({ repoUrl: '', branch: 'main' })
+const gitAvailable = ref(true)
+const syncBusy = ref(false)
+const syncStatus = ref('')
+
 let searchTimer = null
 let toastTimer = null
 
@@ -95,6 +102,75 @@ async function importData() {
   else if (r.error) toast(r.error)
 }
 
+// ---- 同步到私有仓库 ----
+async function openSync() {
+  const cfg = await window.api.syncGetConfig()
+  syncCfg.value = { repoUrl: cfg.repoUrl || '', branch: cfg.branch || 'main' }
+  gitAvailable.value = cfg.gitAvailable !== false
+  syncStatus.value = ''
+  showSync.value = true
+}
+function closeSync() {
+  if (syncBusy.value) return
+  showSync.value = false
+}
+async function saveSyncConfig() {
+  await window.api.syncSetConfig({ ...syncCfg.value })
+  syncStatus.value = '设置已保存'
+  toast('同步设置已保存')
+}
+async function doMerge() {
+  if (syncBusy.value) return
+  syncBusy.value = true          // 先占锁，再 await，避免连点两次同时进入
+  syncStatus.value = '正在同步（合并）…'
+  try {
+    await window.api.syncSetConfig({ ...syncCfg.value })
+    const r = await window.api.syncMerge()
+    if (r.ok) {
+      await reloadAll()
+      syncStatus.value = '✅ ' + r.message
+      toast('已合并同步')
+    } else {
+      syncStatus.value = '❌ ' + (r.error || '同步失败')
+    }
+  } finally {
+    syncBusy.value = false
+  }
+}
+async function doUpload() {
+  if (syncBusy.value) return
+  if (!window.confirm('上传会用本机数据覆盖仓库云端，确定？')) return
+  syncBusy.value = true          // 先占锁，再 await
+  syncStatus.value = '正在上传…'
+  try {
+    await window.api.syncSetConfig({ ...syncCfg.value })
+    const r = await window.api.syncUpload()
+    syncStatus.value = r.ok ? '✅ ' + r.message : '❌ ' + (r.error || '上传失败')
+    if (r.ok) toast('已上传到仓库')
+  } finally {
+    syncBusy.value = false
+  }
+}
+async function doDownload() {
+  if (syncBusy.value) return
+  if (!window.confirm('下载会用云端数据覆盖本机（已自动备份），确定？')) return
+  syncBusy.value = true          // 先占锁，再 await
+  syncStatus.value = '正在下载…'
+  try {
+    await window.api.syncSetConfig({ ...syncCfg.value })
+    const r = await window.api.syncDownload()
+    if (r.ok) {
+      await reloadAll()
+      toast('已从仓库下载')
+      showSync.value = false
+    } else {
+      syncStatus.value = '❌ ' + (r.error || '下载失败')
+    }
+  } finally {
+    syncBusy.value = false
+  }
+}
+
 // 关窗前：若正在编辑，先保存当前笔记，再通知主进程可以关闭了
 async function onBeforeClose() {
   try {
@@ -122,6 +198,7 @@ onMounted(() => {
       <button class="ghost" @click="exportJson" title="导出为 JSON 备份文件">导出</button>
       <button class="ghost" @click="exportCsv" title="导出为 CSV（Excel 可打开）">导出CSV</button>
       <button class="ghost" @click="importData" title="从 JSON 备份导入">导入</button>
+      <button class="ghost" @click="openSync" title="同步到私有 git 仓库">同步</button>
     </header>
 
     <div class="tagrow" v-if="tags.length">
@@ -157,6 +234,48 @@ onMounted(() => {
   <!-- 编辑视图 -->
   <NoteEditor v-else ref="editorRef" :key="editingNote.id ?? 'new'" :note="editingNote" :all-tags="tags"
               @save="onSave" @cancel="onCancel" @delete="onDelete" />
+
+  <!-- 同步设置弹窗 -->
+  <transition name="fade">
+    <div v-if="showSync" class="modal-mask" @click.self="closeSync">
+      <div class="modal">
+        <div class="modal-head">
+          <h2>同步到私有仓库</h2>
+          <button class="x" @click="closeSync" :disabled="syncBusy">✕</button>
+        </div>
+
+        <p v-if="!gitAvailable" class="warn">未检测到 git，请先安装 git 并配置 SSH 密钥后重试。</p>
+
+        <label class="fld">
+          <span>仓库地址（SSH）</span>
+          <input v-model.trim="syncCfg.repoUrl" placeholder="git@github.com:你的账号/私有数据仓库.git" />
+        </label>
+        <label class="fld">
+          <span>分支</span>
+          <input v-model.trim="syncCfg.branch" placeholder="main" />
+        </label>
+
+        <p class="hint">数据以<strong>明文</strong>推送，请务必使用<strong>私有</strong>仓库。「同步」会自动合并两台机器的改动（含删除），合并前自动备份本机。</p>
+
+        <div class="modal-actions">
+          <button class="ghost" @click="saveSyncConfig" :disabled="syncBusy">保存设置</button>
+          <span class="spacer"></span>
+          <button class="primary-sync" @click="doMerge" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">🔄 同步（合并）</button>
+        </div>
+
+        <div v-if="syncStatus" class="sync-status">{{ syncStatus }}</div>
+
+        <details class="adv">
+          <summary>兜底 / 高级（强制覆盖，一般用不到）</summary>
+          <p class="hint">合并出问题时才用：会整份覆盖，不做合并。新电脑第一次也可用「强制下载」拉全量。</p>
+          <div class="modal-actions">
+            <button class="ghost" @click="doUpload" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">⬆ 强制上传（本机覆盖云端）</button>
+            <button class="ghost" @click="doDownload" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">⬇ 强制下载（云端覆盖本机）</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </transition>
 
   <transition name="fade">
     <div v-if="toastMsg" class="toast">{{ toastMsg }}</div>
@@ -210,6 +329,30 @@ main { max-width: 1000px; margin: 0 auto; padding: 12px 20px 24px; }
 }
 .card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .card-meta { color: #9ca3af; font-size: 11px; margin-top: 8px; }
+
+.modal-mask {
+  position: fixed; inset: 0; background: rgba(0,0,0,.35);
+  display: flex; align-items: center; justify-content: center; z-index: 150; padding: 20px;
+}
+.modal {
+  background: var(--card); border-radius: 14px; width: 100%; max-width: 460px;
+  padding: 20px 22px; box-shadow: 0 12px 40px rgba(0,0,0,.25);
+}
+.modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.modal-head h2 { font-size: 17px; margin: 0; }
+.modal-head .x { background: none; border: none; font-size: 16px; color: var(--muted); cursor: pointer; padding: 4px 8px; }
+.fld { display: block; margin-bottom: 12px; }
+.fld span { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.fld input { width: 100%; }
+.warn { background: #fef2f2; color: #b91c1c; border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 0 0 12px; }
+.hint { font-size: 12px; color: var(--muted); line-height: 1.6; margin: 4px 0 16px; }
+.modal-actions { display: flex; align-items: center; gap: 8px; }
+.modal-actions .spacer { flex: 1; }
+.sync-status { margin-top: 14px; font-size: 13px; color: var(--muted); word-break: break-all; white-space: pre-wrap; }
+.primary-sync { font-weight: 600; }
+.adv { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 10px; }
+.adv summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.adv .modal-actions { margin-top: 10px; flex-wrap: wrap; }
 
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);

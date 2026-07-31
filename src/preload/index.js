@@ -13,6 +13,13 @@ const api = {
   exportCsv: () => ipcRenderer.invoke('data:exportCsv'),
   importData: () => ipcRenderer.invoke('data:import'),
 
+  // 私有仓库同步
+  syncGetConfig: () => ipcRenderer.invoke('sync:getConfig'),
+  syncSetConfig: (cfg) => ipcRenderer.invoke('sync:setConfig', cfg),
+  syncMerge: () => ipcRenderer.invoke('sync:merge'),
+  syncUpload: () => ipcRenderer.invoke('sync:upload'),
+  syncDownload: () => ipcRenderer.invoke('sync:download'),
+
   // 关窗前保存钩子：主进程发 before-close，渲染层保存完调用 flushDone
   onBeforeClose: (cb) => ipcRenderer.on('app:before-close', () => cb()),
   flushDone: () => ipcRenderer.send('app:flush-done')
