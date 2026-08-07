@@ -13,6 +13,9 @@ const api = {
   exportCsv: () => ipcRenderer.invoke('data:exportCsv'),
   importData: () => ipcRenderer.invoke('data:import'),
 
+  // 用系统默认浏览器打开链接（Ctrl/⌘ + 单击时调用）
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
+
   // 私有仓库同步
   syncGetConfig: () => ipcRenderer.invoke('sync:getConfig'),
   syncSetConfig: (cfg) => ipcRenderer.invoke('sync:setConfig', cfg),

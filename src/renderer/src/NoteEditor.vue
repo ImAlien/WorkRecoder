@@ -77,13 +77,28 @@ const editor = useEditor({
   content: props.note.body || '',
   onUpdate: () => { dirty.value = true },
   extensions: [
-    StarterKit,
+    // 链接：关掉「单击即打开」——单击只把光标放进去，方便编辑；
+    // 真正打开改由下方 handleClick 在 Ctrl/⌘ + 单击时走系统默认浏览器。
+    StarterKit.configure({
+      link: { openOnClick: false, HTMLAttributes: { rel: 'noopener noreferrer nofollow' } }
+    }),
     Image.configure({ inline: false, allowBase64: true }),
     Placeholder.configure({ placeholder: '开始记录…（账号密码、步骤、链接都写这里，可粘贴/插入截图）' }),
     TaskList,
     TaskItem.configure({ nested: true })
   ],
   editorProps: {
+    // 单击链接：默认什么都不做（放光标）；Ctrl/⌘ + 单击才用系统默认浏览器打开
+    handleClick(view, pos, event) {
+      const a = event.target && event.target.closest && event.target.closest('a[href]')
+      if (a && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault()
+        const href = a.getAttribute('href')
+        if (href) window.api.openExternal(href)
+        return true
+      }
+      return false
+    },
     handlePaste(view, event) {
       const items = event.clipboardData?.items || []
       for (const it of items) {
@@ -305,6 +320,11 @@ const isActive = (name, attrs) => editor.value?.isActive(name, attrs)
   font-family: Consolas, Menlo, monospace; font-size: 13px; overflow-x: auto;
 }
 .note-body .ProseMirror code { font-family: Consolas, Menlo, monospace; }
+.note-body .ProseMirror a {
+  color: var(--primary); text-decoration: underline; cursor: pointer;
+}
+/* 悬停时提示：Ctrl/⌘ + 单击用系统浏览器打开 */
+.note-body .ProseMirror a:hover { text-decoration: underline; opacity: .85; }
 .note-body .ProseMirror ul[data-type="taskList"] { list-style: none; padding-left: 0.2em; }
 .note-body .ProseMirror ul[data-type="taskList"] li { display: flex; align-items: flex-start; gap: 8px; }
 .note-body .ProseMirror ul[data-type="taskList"] li > label { margin-top: 4px; }
