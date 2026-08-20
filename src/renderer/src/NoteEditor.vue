@@ -8,13 +8,15 @@ import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 
 const props = defineProps({
-  note: { type: Object, required: true },   // {id, title, body, tags}
+  note: { type: Object, required: true },   // {id, title, body, tags, attachments}
   allTags: { type: Array, default: () => [] } // [{name,count}]
 })
-const emit = defineEmits(['save', 'cancel', 'delete'])
+const emit = defineEmits(['save', 'cancel', 'delete', 'notify'])
 
 const title = ref(props.note.title || '')
 const tags = reactive([...(props.note.tags || [])])
+// 附件元数据：[{ file, name, size, added_at, missing }]。file 是内容哈希，本体由主进程存盘。
+const attachments = reactive([...(props.note.attachments || [])])
 const tagInput = ref('')
 const fileInput = ref(null)
 
@@ -110,11 +112,15 @@ const editor = useEditor({
       return false
     },
     handleDrop(view, event) {
-      const files = event.dataTransfer?.files || []
-      for (const f of files) {
-        if (f.type.startsWith('image/')) { insertImageFile(f); event.preventDefault(); return true }
-      }
-      return false
+      const files = [...(event.dataTransfer?.files || [])]
+      if (!files.length) return false
+      const images = files.filter((f) => f.type.startsWith('image/'))
+      const others = files.filter((f) => !f.type.startsWith('image/'))
+      // 图片照旧内嵌进正文；其它文件一律当附件收下
+      images.forEach((f) => insertImageFile(f))
+      if (others.length) addFiles(others)
+      event.preventDefault()
+      return true
     }
   }
 })
@@ -154,6 +160,62 @@ function onFilePicked(e) {
   e.target.value = ''
 }
 
+// ---- 附件 ----
+function fmtSize(n) {
+  const b = Number(n) || 0
+  if (b < 1024) return b + ' B'
+  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB'
+  return (b / 1048576).toFixed(1) + ' MB'
+}
+
+// 把新收录的附件并入列表（同一个 file 不重复挂）
+function mergeItems(items) {
+  let n = 0
+  for (const it of items || []) {
+    if (attachments.some((a) => a.file === it.file)) continue
+    attachments.push({ ...it, missing: false })
+    n++
+  }
+  if (n) dirty.value = true
+  return n
+}
+
+// 拖拽进来的 File → 真实路径（靠 preload 的 webUtils）→ 主进程收录
+async function addFiles(files) {
+  const paths = files.map((f) => window.api.getFilePath(f)).filter(Boolean)
+  if (!paths.length) { emit('notify', '无法读取文件路径，请用「📎 附件」按钮选择'); return }
+  const r = await window.api.addAttachments(paths)
+  reportAdd(r)
+}
+
+async function pickAttachments() {
+  const r = await window.api.pickAttachments()
+  reportAdd(r)
+}
+
+// 超限/无权限等失败要如实告知，不能默默丢掉用户拖进来的文件
+function reportAdd(r) {
+  if (!r) return
+  const n = mergeItems(r.items)
+  const errs = r.errors || []
+  if (errs.length) emit('notify', errs[0] + (errs.length > 1 ? ` 等 ${errs.length} 个文件未添加` : ''))
+  else if (n) emit('notify', `已添加 ${n} 个附件`)
+}
+
+async function openAttachment(a) {
+  const r = await window.api.openAttachment(a.file, a.name)
+  if (!r.ok && r.error) emit('notify', r.error)
+}
+async function saveAttachmentAs(a) {
+  const r = await window.api.saveAttachmentAs(a.file, a.name)
+  if (r.ok) emit('notify', '已另存')
+  else if (r.error) emit('notify', r.error)
+}
+function removeAttachment(a) {
+  const i = attachments.indexOf(a)
+  if (i >= 0) { attachments.splice(i, 1); dirty.value = true }
+}
+
 // ---- 关闭 / 保存 ----
 // 只带着预填标签、没手动改过标签时，视作没动过标签
 function tagsUntouched() {
@@ -161,6 +223,7 @@ function tagsUntouched() {
 }
 function isEmpty() {
   if (pendingInserts.size) return false   // 有图片正在插入，不算空
+  if (attachments.length) return false    // 只挂了附件也是内容，不能当空笔记丢掉
   const body = editor.value?.getHTML() || ''
   const textEmpty = editor.value ? editor.value.getText().trim() === '' && !/<img/i.test(body) : true
   return !title.value.trim() && textEmpty && tagsUntouched()
@@ -171,7 +234,11 @@ function payload() {
     id: props.note.id,
     title: title.value,
     body: editor.value?.getHTML() || '',
-    tags: [...tags]
+    tags: [...tags],
+    // 只传主进程认的字段（missing 是界面标记，不入库）
+    attachments: attachments.map((a) => ({
+      file: a.file, name: a.name, size: a.size, added_at: a.added_at
+    }))
   }
 }
 
@@ -231,11 +298,29 @@ const isActive = (name, attrs) => editor.value?.isActive(name, attrs)
               @click="editor.chain().focus().toggleCodeBlock().run()" title="代码块">&lt;/&gt;</button>
       <span class="sep"></span>
       <button @click="pickImage" title="插入图片">🖼 插图</button>
+      <button @click="pickAttachments" title="添加附件（任意文件，也可拖拽到正文）">📎 附件</button>
     </div>
 
     <div class="paper">
       <input class="note-title" v-model="title" placeholder="标题" />
       <EditorContent :editor="editor" class="note-body" />
+    </div>
+
+    <div class="attachbar" v-if="attachments.length">
+      <div class="attach-head">
+        <span class="tag-label">📎 附件 ({{ attachments.length }})</span>
+      </div>
+      <div class="attach-list">
+        <div v-for="a in attachments" :key="a.file" class="attach-item" :class="{ missing: a.missing }">
+          <span class="a-name" :title="a.missing ? '文件本体还没同步到本机' : a.name"
+                @click="!a.missing && openAttachment(a)">
+            <span class="a-icon">{{ a.missing ? '⚠️' : '📄' }}</span>{{ a.name }}
+          </span>
+          <span class="a-size">{{ a.missing ? '未同步' : fmtSize(a.size) }}</span>
+          <button class="a-btn" v-if="!a.missing" @click="saveAttachmentAs(a)" title="另存为…">⇩</button>
+          <button class="a-btn x" @click="removeAttachment(a)" title="从此笔记移除">×</button>
+        </div>
+      </div>
     </div>
 
     <div class="tagbar">
@@ -304,6 +389,32 @@ const isActive = (name, attrs) => editor.value?.isActive(name, attrs)
 .tag-input { border: none; outline: none; flex: 1; min-width: 140px; padding: 4px; }
 .tag-suggest { padding: 0 16px 10px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .tag-suggest .hint { color: var(--muted); font-size: 12px; }
+
+.attachbar { padding: 10px 16px 0; border-top: 1px solid var(--line); flex-shrink: 0; }
+.attach-head { margin-bottom: 6px; }
+.attach-list { display: flex; flex-direction: column; gap: 4px; }
+.attach-item {
+  display: flex; align-items: center; gap: 8px;
+  background: #f6f7f9; border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 10px; font-size: 13px;
+}
+.attach-item.missing { background: #fef8f2; border-color: #f0d8b8; }
+.a-name {
+  flex: 1; min-width: 0; cursor: pointer; color: var(--primary);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  display: flex; align-items: center; gap: 6px;
+}
+.attach-item.missing .a-name { cursor: default; color: #b45309; }
+.a-name:hover { text-decoration: underline; }
+.attach-item.missing .a-name:hover { text-decoration: none; }
+.a-icon { flex-shrink: 0; }
+.a-size { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.a-btn {
+  background: transparent; border: none; cursor: pointer; color: var(--muted);
+  font-size: 15px; padding: 2px 6px; border-radius: 6px; line-height: 1;
+}
+.a-btn:hover { background: #e6e8eb; color: var(--text); }
+.a-btn.x:hover { background: #fee2e2; color: var(--danger); }
 </style>
 
 <style>

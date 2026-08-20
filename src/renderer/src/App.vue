@@ -57,13 +57,16 @@ function toggleTag(name) {
 
 // ---- 打开编辑器 ----
 function openNew() {
-  editingNote.value = { id: null, title: '', body: '', tags: activeTag.value ? [activeTag.value] : [] }
+  editingNote.value = { id: null, title: '', body: '', tags: activeTag.value ? [activeTag.value] : [], attachments: [] }
   view.value = 'edit'
 }
 async function openEdit(id) {
   const full = await window.api.getRecord(id)
   if (!full) { toast('记录不存在'); await reloadAll(); return }
-  editingNote.value = { id: full.id, title: full.title, body: full.body, tags: full.tags || [] }
+  editingNote.value = {
+    id: full.id, title: full.title, body: full.body,
+    tags: full.tags || [], attachments: full.attachments || []
+  }
   view.value = 'edit'
 }
 
@@ -90,7 +93,7 @@ async function onDelete(id) {
 // ---- 导出 / 导入 ----
 async function exportJson() {
   const r = await window.api.exportJson()
-  if (r.ok) toast('已导出备份')
+  if (r.ok) toast(r.skipped ? `已导出备份（${r.skipped} 个附件未能一并导出）` : '已导出备份')
 }
 async function exportCsv() {
   const r = await window.api.exportCsv()
@@ -219,7 +222,8 @@ onMounted(() => {
       <div class="grid">
         <div v-for="rec in records" :key="rec.id" class="card" @click="openEdit(rec.id)">
           <div class="card-title">
-            <span v-if="rec.hasImage" class="img-badge">🖼</span>{{ rec.title }}
+            <span v-if="rec.hasImage" class="img-badge">🖼</span>
+            <span v-if="rec.hasAttach" class="img-badge" title="含附件">📎</span>{{ rec.title }}
           </div>
           <div class="card-snippet">{{ rec.snippet || '（空）' }}</div>
           <div class="card-tags" v-if="rec.tags.length">
@@ -233,7 +237,7 @@ onMounted(() => {
 
   <!-- 编辑视图 -->
   <NoteEditor v-else ref="editorRef" :key="editingNote.id ?? 'new'" :note="editingNote" :all-tags="tags"
-              @save="onSave" @cancel="onCancel" @delete="onDelete" />
+              @save="onSave" @cancel="onCancel" @delete="onDelete" @notify="toast" />
 
   <!-- 同步设置弹窗 -->
   <transition name="fade">

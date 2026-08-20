@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 // 只把安全的、白名单内的方法暴露给渲染进程
 const api = {
@@ -8,6 +8,17 @@ const api = {
   updateRecord: (id, data) => ipcRenderer.invoke('records:update', id, data),
   deleteRecord: (id) => ipcRenderer.invoke('records:delete', id),
   listTags: () => ipcRenderer.invoke('tags:list'),
+
+  // 附件：本体存在 %APPDATA%\workrecoder\attachments，记录里只存元数据
+  pickAttachments: () => ipcRenderer.invoke('attach:pick'),
+  addAttachments: (paths) => ipcRenderer.invoke('attach:addPaths', paths),
+  openAttachment: (file, name) => ipcRenderer.invoke('attach:open', file, name),
+  saveAttachmentAs: (file, name) => ipcRenderer.invoke('attach:saveAs', file, name),
+  // 拖拽进来的 File 在渲染层拿不到真实路径（Electron 32+ 去掉了 File.path），
+  // 只能在 preload 里用 webUtils 换取
+  getFilePath: (file) => {
+    try { return webUtils.getPathForFile(file) } catch { return '' }
+  },
 
   exportJson: () => ipcRenderer.invoke('data:exportJson'),
   exportCsv: () => ipcRenderer.invoke('data:exportCsv'),
