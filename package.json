@@ -1,6 +1,6 @@
 {
   "name": "workrecoder",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "工作记录本 - 记录账号密码、文档链接、使用方法等，支持搜索",
   "main": "./out/main/index.js",
   "author": "",
