@@ -248,6 +248,16 @@ async function done() {
   emit('save', payload())
 }
 
+// 直接返回、不保存。没改过就静默返回；改过则确认一次，避免手滑丢掉刚写的内容。
+// 已保存过的老笔记维持上次保存的样子；新笔记则整条丢弃。
+function discard() {
+  if (dirty.value) {
+    const what = props.note.id == null ? '放弃这条新笔记？' : '放弃本次修改？'
+    if (!confirm(what + '未保存的内容将丢失，此操作不可撤销。')) return
+  }
+  emit('cancel')
+}
+
 // 关窗前调用：直接落盘（不走导航），空的新笔记或没改过的笔记则跳过
 async function flushSave() {
   await flushPending()
@@ -271,6 +281,8 @@ const isActive = (name, attrs) => editor.value?.isActive(name, attrs)
   <div class="editor-view">
     <div class="topbar">
       <button class="ghost" @click="done">‹ 返回并保存</button>
+      <button class="ghost quiet" @click="discard"
+              title="直接返回，不保存本次修改">放弃修改</button>
       <div class="spacer"></div>
       <button v-if="note.id != null" class="ghost danger" @click="del">删除</button>
     </div>
@@ -352,6 +364,9 @@ const isActive = (name, attrs) => editor.value?.isActive(name, attrs)
 .spacer { flex: 1; }
 .ghost.danger { color: var(--danger); }
 .ghost.danger:hover { background: #fee2e2; }
+/* 放弃修改：次要动作，压低视觉权重，避免和「返回并保存」抢注意力 */
+.ghost.quiet { color: var(--muted); }
+.ghost.quiet:hover { background: #eceef1; color: var(--text); }
 
 .toolbar {
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
