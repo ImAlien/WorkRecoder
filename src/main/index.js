@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, shell, clipboard, nativeImage, Menu } from 'electron'
 import { join, basename, extname } from 'path'
 import {
   readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, copyFileSync,
@@ -1040,6 +1040,42 @@ function createWindow() {
     if (url.startsWith('file://')) return                   // 打包后：本地 index.html
     e.preventDefault()
     openExternalUrl(url)
+  })
+
+  // 正文图片（data: 开头的 base64 内嵌图）右键菜单：复制图片 / 图片另存为
+  mainWin.webContents.on('context-menu', (_e, params) => {
+    if (!params.hasImageContents || typeof params.srcURL !== 'string') return
+    if (!params.srcURL.startsWith('data:image/')) return
+
+    // 把 dataURL 还原成图片；解析失败则只保留「另存为」
+    let img = null
+    try { img = nativeImage.createFromDataURL(params.srcURL) } catch { img = null }
+    const imgOk = img && !img.isEmpty()
+
+    const menu = Menu.buildFromTemplate([
+      {
+        label: '复制图片',
+        enabled: imgOk,
+        click: () => { clipboard.writeImage(img) }
+      },
+      {
+        label: '图片另存为…',
+        click: async () => {
+          const m = /^data:image\/([a-z0-9+.-]+);/i.exec(params.srcURL)
+          const ext = (m && m[1].toLowerCase().replace('jpeg', 'jpg')) || 'png'
+          const { canceled, filePath } = await dialog.showSaveDialog({
+            title: '图片另存为',
+            defaultPath: `image_${now().replace(/[-: ]/g, '').slice(0, 14)}.${ext}`
+          })
+          if (canceled || !filePath) return
+          try {
+            const buf = Buffer.from(params.srcURL.slice(params.srcURL.indexOf(',') + 1), 'base64')
+            writeFileSync(filePath, buf)
+          } catch { /* 写盘失败静默：与导出等路径一致，不打扰编辑 */ }
+        }
+      }
+    ])
+    menu.popup()
   })
 
   // 关闭前先让渲染层保存正在编辑的内容，避免未点「返回并保存」就丢失
