@@ -18,6 +18,18 @@ const gitAvailable = ref(true)
 const syncBusy = ref(false)
 const syncStatus = ref('')
 
+// 状态灯 + 「保存并返回」自动同步
+const autoSyncing = ref(false)
+const syncState = ref({ configured: false, gitAvailable: true, synced: false, lastSyncAt: '' })
+const syncing = computed(() => syncBusy.value || autoSyncing.value)
+const syncBadge = computed(() => {
+  if (syncing.value) return { cls: 'busy', text: '同步中…', tip: '正在与仓库同步' }
+  if (!syncState.value.configured) return { cls: 'off', text: '未设置同步', tip: '还没有配置同步仓库，点这里设置' }
+  if (!syncState.value.gitAvailable) return { cls: 'off', text: 'git 不可用', tip: '未检测到 git，无法同步' }
+  if (syncState.value.synced) return { cls: 'on', text: '已同步', tip: `上次同步：${syncState.value.lastSyncAt || '—'}` }
+  return { cls: 'pending', text: '未同步', tip: '有改动还没进仓库，点这里立即同步' }
+})
+
 let searchTimer = null
 let toastTimer = null
 
@@ -42,7 +54,11 @@ async function loadTags() {
   tags.value = await window.api.listTags()
 }
 async function reloadAll() {
-  await Promise.all([refresh(), loadTags()])
+  await Promise.all([refresh(), loadTags(), refreshSyncState()])
+}
+
+async function refreshSyncState() {
+  try { syncState.value = await window.api.syncStatus() } catch { /* 状态灯失败不影响使用 */ }
 }
 
 function onSearch() {
@@ -77,6 +93,7 @@ async function onSave(payload) {
   editingNote.value = null
   await reloadAll()
   toast('已保存')
+  autoSync()          // 保存并返回后自动同步；不 await，不挡住界面
 }
 function onCancel() {
   view.value = 'list'
@@ -114,7 +131,7 @@ async function openSync() {
   showSync.value = true
 }
 function closeSync() {
-  if (syncBusy.value) return
+  if (syncing.value) return
   showSync.value = false
 }
 async function saveSyncConfig() {
@@ -123,7 +140,7 @@ async function saveSyncConfig() {
   toast('同步设置已保存')
 }
 async function doMerge() {
-  if (syncBusy.value) return
+  if (syncing.value) return
   syncBusy.value = true          // 先占锁，再 await，避免连点两次同时进入
   syncStatus.value = '正在同步（合并）…'
   try {
@@ -135,13 +152,14 @@ async function doMerge() {
       toast('已合并同步')
     } else {
       syncStatus.value = '❌ ' + (r.error || '同步失败')
+      await refreshSyncState()
     }
   } finally {
     syncBusy.value = false
   }
 }
 async function doUpload() {
-  if (syncBusy.value) return
+  if (syncing.value) return
   if (!window.confirm('上传会用本机数据覆盖仓库云端，确定？')) return
   syncBusy.value = true          // 先占锁，再 await
   syncStatus.value = '正在上传…'
@@ -150,12 +168,13 @@ async function doUpload() {
     const r = await window.api.syncUpload()
     syncStatus.value = r.ok ? '✅ ' + r.message : '❌ ' + (r.error || '上传失败')
     if (r.ok) toast('已上传到仓库')
+    await refreshSyncState()
   } finally {
     syncBusy.value = false
   }
 }
 async function doDownload() {
-  if (syncBusy.value) return
+  if (syncing.value) return
   if (!window.confirm('下载会用云端数据覆盖本机（已自动备份），确定？')) return
   syncBusy.value = true          // 先占锁，再 await
   syncStatus.value = '正在下载…'
@@ -168,9 +187,31 @@ async function doDownload() {
       showSync.value = false
     } else {
       syncStatus.value = '❌ ' + (r.error || '下载失败')
+      await refreshSyncState()
     }
   } finally {
     syncBusy.value = false
+  }
+}
+
+// 「保存并返回」后自动同步：未配置仓库/git 缺失时静默跳过，失败只弹提示不打断使用
+async function autoSync() {
+  if (syncing.value) return
+  let st
+  try { st = await window.api.syncStatus() } catch { return }
+  syncState.value = st
+  if (!st.configured || !st.gitAvailable) return
+  autoSyncing.value = true
+  try {
+    const r = await window.api.syncMerge()
+    if (!r.ok) toast('自动同步失败：' + (r.error || '未知错误'))
+    else toast('已自动同步')
+    await reloadAll()
+  } catch (e) {
+    toast('自动同步失败：' + ((e && e.message) || e))
+  } finally {
+    autoSyncing.value = false
+    await refreshSyncState()
   }
 }
 
@@ -202,6 +243,9 @@ onMounted(() => {
       <button class="ghost" @click="exportCsv" title="导出为 CSV（Excel 可打开）">导出CSV</button>
       <button class="ghost" @click="importData" title="从 JSON 备份导入">导入</button>
       <button class="ghost" @click="openSync" title="同步到私有 git 仓库">同步</button>
+      <button class="sync-badge" :class="syncBadge.cls" @click="openSync" :title="syncBadge.tip">
+        <span class="dot"></span>{{ syncBadge.text }}
+      </button>
     </header>
 
     <div class="tagrow" v-if="tags.length">
@@ -245,7 +289,7 @@ onMounted(() => {
       <div class="modal">
         <div class="modal-head">
           <h2>同步到私有仓库</h2>
-          <button class="x" @click="closeSync" :disabled="syncBusy">✕</button>
+          <button class="x" @click="closeSync" :disabled="syncing">✕</button>
         </div>
 
         <p v-if="!gitAvailable" class="warn">未检测到 git，请先安装 git 并配置 SSH 密钥后重试。</p>
@@ -262,9 +306,9 @@ onMounted(() => {
         <p class="hint">数据以<strong>明文</strong>推送，请务必使用<strong>私有</strong>仓库。「同步」会自动合并两台机器的改动（含删除），合并前自动备份本机。</p>
 
         <div class="modal-actions">
-          <button class="ghost" @click="saveSyncConfig" :disabled="syncBusy">保存设置</button>
+          <button class="ghost" @click="saveSyncConfig" :disabled="syncing">保存设置</button>
           <span class="spacer"></span>
-          <button class="primary-sync" @click="doMerge" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">🔄 同步（合并）</button>
+          <button class="primary-sync" @click="doMerge" :disabled="syncing || !gitAvailable || !syncCfg.repoUrl">🔄 同步（合并）</button>
         </div>
 
         <div v-if="syncStatus" class="sync-status">{{ syncStatus }}</div>
@@ -273,8 +317,8 @@ onMounted(() => {
           <summary>兜底 / 高级（强制覆盖，一般用不到）</summary>
           <p class="hint">合并出问题时才用：会整份覆盖，不做合并。新电脑第一次也可用「强制下载」拉全量。</p>
           <div class="modal-actions">
-            <button class="ghost" @click="doUpload" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">⬆ 强制上传（本机覆盖云端）</button>
-            <button class="ghost" @click="doDownload" :disabled="syncBusy || !gitAvailable || !syncCfg.repoUrl">⬇ 强制下载（云端覆盖本机）</button>
+            <button class="ghost" @click="doUpload" :disabled="syncing || !gitAvailable || !syncCfg.repoUrl">⬆ 强制上传（本机覆盖云端）</button>
+            <button class="ghost" @click="doDownload" :disabled="syncing || !gitAvailable || !syncCfg.repoUrl">⬇ 强制下载（云端覆盖本机）</button>
           </div>
         </details>
       </div>
@@ -333,6 +377,24 @@ main { max-width: 1000px; margin: 0 auto; padding: 12px 20px 24px; }
 }
 .card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .card-meta { color: #9ca3af; font-size: 11px; margin-top: 8px; }
+
+.sync-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 11px; border-radius: 20px; font-size: 13px; font-weight: 500;
+  background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0;
+}
+.sync-badge:hover { background: #d1fae5; color: #047857; }
+.sync-badge .dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+/* 未同步：黄色 */
+.sync-badge.pending { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+.sync-badge.pending:hover { background: #fef3c7; color: #b45309; }
+/* 未配置 / git 缺失：中性灰，不指向“好”或“坏” */
+.sync-badge.off { background: #f0f1f3; color: var(--muted); border-color: var(--line); }
+.sync-badge.off:hover { background: #e6e8eb; color: var(--text); }
+.sync-badge.busy { background: #eff6ff; color: var(--primary); border-color: #bfdbfe; }
+.sync-badge.busy:hover { background: #dbeafe; color: var(--primary); }
+.sync-badge.busy .dot { animation: sync-pulse 1s ease-in-out infinite; }
+@keyframes sync-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
 
 .modal-mask {
   position: fixed; inset: 0; background: rgba(0,0,0,.35);

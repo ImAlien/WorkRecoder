@@ -23,6 +23,7 @@ let dataFile = ''
 let syncConfigFile = ''   // %APPDATA%\workrecoder\workrecoder-sync.json（不进入同步内容）
 let syncDir = ''          // %APPDATA%\workrecoder\sync-repo（与远端交互的 git 仓库）
 let attachDir = ''        // %APPDATA%\workrecoder\attachments（附件本体，按内容哈希命名）
+let syncStateFile = ''    // %APPDATA%\workrecoder\workrecoder-sync-state.json（上次同步进度，只驱动状态灯）
 // store = { records:[{id, uid, title, body, tags[], created_at, updated_at, ver}], nextId, deleted:[{uid, deleted_at, ver}], clock }
 // uid 是跨机器同步的稳定身份（合并按 uid 认记录）；整数 id 仅作本地句柄，合并后会重排。
 // ver 是每条记录的 Lamport 版本号（本地每次改动 +1），合并时“版本高者胜”，不依赖系统时钟，
@@ -35,6 +36,7 @@ function loadStore() {
   syncConfigFile = join(app.getPath('userData'), 'workrecoder-sync.json')
   syncDir = join(app.getPath('userData'), 'sync-repo')
   attachDir = join(app.getPath('userData'), ATTACH_DIR_NAME)
+  syncStateFile = join(app.getPath('userData'), 'workrecoder-sync-state.json')
   if (existsSync(dataFile)) {
     try {
       store = JSON.parse(readFileSync(dataFile, 'utf-8'))
@@ -667,6 +669,54 @@ function writeSyncConfig(cfg) {
   return { ok: true }
 }
 
+// ---------------------------------------------------------------------------
+// 同步状态（列表页右上角的状态灯）
+// 判据只用本地数据：store.clock 每次新建/编辑/删除都会 +1（删除也推进），
+// 合并/下载后取两边较大值。因此「上次成功同步时记下的 clock == 当前 clock」
+// 就等价于「本机没有尚未推送的改动」，无需联网 fetch 即可判断。
+// ---------------------------------------------------------------------------
+function readSyncState() {
+  const def = { lastSyncedClock: -1, lastSyncAt: '' }
+  try {
+    if (existsSync(syncStateFile)) {
+      const s = JSON.parse(readFileSync(syncStateFile, 'utf-8'))
+      const n = Number(s.lastSyncedClock)
+      return { lastSyncedClock: isFinite(n) ? n : -1, lastSyncAt: String(s.lastSyncAt || '') }
+    }
+  } catch { /* 状态文件损坏就当从未同步过 */ }
+  return def
+}
+
+function markSynced() {
+  try {
+    const out = { lastSyncedClock: Number(store.clock) || 0, lastSyncAt: now() }
+    const tmp = syncStateFile + '.tmp'
+    writeFileSync(tmp, JSON.stringify(out, null, 2), 'utf-8')
+    renameSync(tmp, syncStateFile)
+  } catch { /* 写不了状态只影响状态灯，不影响同步本身 */ }
+}
+
+// git 可用性只探一次：状态灯每次刷新都会问，每次都起一个 git 进程太重
+let gitOkCache = null
+async function gitAvailable(force) {
+  if (force || gitOkCache === null) {
+    const r = await runGit(['--version'], { cwd: app.getPath('userData') })
+    gitOkCache = r.ok
+  }
+  return gitOkCache
+}
+
+async function syncStatusInfo() {
+  const cfg = readSyncConfig()
+  const st = readSyncState()
+  return {
+    configured: !!cfg.repoUrl,
+    gitAvailable: await gitAvailable(false),
+    synced: !!cfg.repoUrl && !!st.lastSyncAt && st.lastSyncedClock === (Number(store.clock) || 0),
+    lastSyncAt: st.lastSyncAt
+  }
+}
+
 // 用于 commit 的固定身份（避免目标机器没有全局 git 身份时 commit 失败）
 const GIT_IDENTITY = ['-c', 'user.email=workrecoder@local', '-c', 'user.name=WorkRecoder']
 
@@ -780,6 +830,7 @@ async function syncUpload() {
 
     r = await runGit(['push', '--force', 'origin', `HEAD:${branch}`])
     if (!r.ok) return { ok: false, error: (r.stderr || r.stdout || '推送失败').trim() }
+    markSynced() // 记下已推送到的本地时钟，右上角状态灯据此变绿
     return { ok: true, message: '已上传到仓库' }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
@@ -821,6 +872,7 @@ async function syncDownload() {
     loadStore() // 重新载入内存
     pullNeededAttachments() // store 已是云端记录集，此时才能判定该拉哪些附件
     gcAttachments() // 清理无人引用的附件
+    markSynced() // 已与云端一致
     return { ok: true, message: '已从仓库下载' }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
@@ -908,6 +960,7 @@ async function syncMerge() {
       }
       return { ok: false, error: msg }
     }
+    markSynced() // 合并结果已推送成功，本机改动全部上云
     return { ok: true, message: '已合并同步' }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }
@@ -976,10 +1029,11 @@ function registerIpc() {
   // ---- 私有仓库同步 ----
   ipcMain.handle('sync:getConfig', async () => {
     const cfg = readSyncConfig()
-    const v = await runGit(['--version'], { cwd: app.getPath('userData') })
-    return { ...cfg, gitAvailable: v.ok }
+    // 打开设置窗时强制重探一次：用户可能刚装好 git
+    return { ...cfg, gitAvailable: await gitAvailable(true) }
   })
   ipcMain.handle('sync:setConfig', (_e, cfg) => writeSyncConfig(cfg))
+  ipcMain.handle('sync:status', () => syncStatusInfo())
   ipcMain.handle('sync:merge', () => withSyncLock(syncMerge))
   ipcMain.handle('sync:upload', () => withSyncLock(syncUpload))
   ipcMain.handle('sync:download', () => withSyncLock(syncDownload))

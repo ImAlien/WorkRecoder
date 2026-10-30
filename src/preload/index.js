@@ -30,6 +30,8 @@ const api = {
   // 私有仓库同步
   syncGetConfig: () => ipcRenderer.invoke('sync:getConfig'),
   syncSetConfig: (cfg) => ipcRenderer.invoke('sync:setConfig', cfg),
+  // 同步状态灯：configured / gitAvailable / synced / lastSyncAt
+  syncStatus: () => ipcRenderer.invoke('sync:status'),
   syncMerge: () => ipcRenderer.invoke('sync:merge'),
   syncUpload: () => ipcRenderer.invoke('sync:upload'),
   syncDownload: () => ipcRenderer.invoke('sync:download'),
